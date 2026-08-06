@@ -1,0 +1,12 @@
+# Binaries and outputs
+/dist/
+/codelab-renderer
+/preview.html
+
+# OS metadata
+.DS_Store
+
+# Go workspaces and test reports
+go.work
+*.test
+*.out
