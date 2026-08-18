@@ -10,3 +10,18 @@
 go.work
 *.test
 *.out
+
+# Local editor and tooling config
+.claude/
+CLAUDE.md
+.cursor/
+.cursorrules
+.cursorignore
+.windsurfrules
+.continue/
+.codeium/
+.aider*
+AGENTS.md
+.github/copilot-instructions.md
+.vscode/
+.idea/
