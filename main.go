@@ -19,6 +19,7 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/renderer/html"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,6 +65,28 @@ const codelabTemplate = `<!DOCTYPE html>
     }
     code {
       font-family: 'Source Code Pro', monospace;
+    }
+    /* codelab-elements.css only styles .note/.tip/.warning/.special, but the
+       claat markdown source uses .positive/.negative infoboxes. The long
+       selector mirrors that stylesheet so these win over its generic
+       "aside { border-left: 4px solid }" rule. */
+    aside.positive,
+    google-codelab:not([theme="minimal"]) google-codelab-step .instructions aside.positive {
+      border: none;
+      background: #E6F4EA;
+      color: #212124;
+    }
+    aside.negative,
+    google-codelab:not([theme="minimal"]) google-codelab-step .instructions aside.negative {
+      border: none;
+      background: #FEF7E0;
+      color: #212124;
+    }
+    google-codelab google-codelab-step .instructions aside > :first-child {
+      margin-top: 0;
+    }
+    google-codelab google-codelab-step .instructions aside > :last-child {
+      margin-bottom: 0;
     }
   </style>
 </head>
@@ -358,8 +381,13 @@ func parseSteps(mdStr string, baseDir string) ([]Step, error) {
 			goldmark.WithExtensions(
 				extension.GFM,
 			),
+			goldmark.WithRendererOptions(
+				// Codelab sources embed raw HTML (e.g. <aside class="positive">).
+				// Without this goldmark replaces it with "<!-- raw HTML omitted -->".
+				html.WithUnsafe(),
+			),
 		)
-		if err := md.Convert([]byte(stepMD), &buf); err != nil {
+		if err := md.Convert([]byte(normalizeAsides(stepMD)), &buf); err != nil {
 			return fmt.Errorf("failed to convert markdown to html: %w", err)
 		}
 
@@ -404,6 +432,114 @@ func parseSteps(mdStr string, baseDir string) ([]Step, error) {
 	}
 
 	return steps, nil
+}
+
+var (
+	asideBlockRe = regexp.MustCompile(`(?ism)^[ \t]*<aside\b[^>]*>.*?</aside\s*>`)
+	asideOpenRe  = regexp.MustCompile(`(?is)^[ \t]*<aside\b[^>]*>`)
+	asideCloseRe = regexp.MustCompile(`(?is)</aside\s*>$`)
+	fenceRe      = regexp.MustCompile("^\\s{0,3}(?:```|~~~)")
+)
+
+// normalizeAsides surrounds the contents of an <aside> with blank lines. An
+// <aside> starts a markdown HTML block that only ends at a blank line, so
+// without this the body of an infobox is emitted as opaque raw HTML and its
+// markdown (bold, lists, links) is never converted. Fenced code blocks are
+// left untouched so codelabs can show <aside> markup as example source.
+func normalizeAsides(md string) string {
+	var result []string
+	var text []string
+	inFence := false
+
+	flush := func() {
+		if len(text) == 0 {
+			return
+		}
+		result = append(result, strings.Split(rewriteAsides(strings.Join(text, "\n")), "\n")...)
+		text = nil
+	}
+
+	for _, line := range strings.Split(md, "\n") {
+		switch {
+		case fenceRe.MatchString(line):
+			flush()
+			inFence = !inFence
+			result = append(result, line)
+		case inFence:
+			result = append(result, line)
+		default:
+			text = append(text, line)
+		}
+	}
+	flush()
+
+	return strings.Join(result, "\n")
+}
+
+func rewriteAsides(s string) string {
+	return asideBlockRe.ReplaceAllStringFunc(s, func(block string) string {
+		open := asideOpenRe.FindString(block)
+		closeLoc := asideCloseRe.FindStringIndex(block)
+		if open == "" || closeLoc == nil || closeLoc[0] < len(open) {
+			return block
+		}
+
+		// An <aside> nested in a list item stays part of that item only while
+		// its lines keep the item's indentation, so realign the body with the
+		// opening tag instead of flattening it to column zero.
+		indent := open[:len(open)-len(strings.TrimLeft(open, " \t"))]
+		inner := indentLines(dedent(strings.Trim(block[len(open):closeLoc[0]], "\n")), indent)
+		closeTag := indent + block[closeLoc[0]:]
+		if strings.TrimSpace(inner) == "" {
+			return open + closeTag
+		}
+
+		return open + "\n\n" + inner + "\n\n" + closeTag
+	})
+}
+
+func indentLines(s, indent string) string {
+	if indent == "" {
+		return s
+	}
+
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			lines[i] = indent + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// dedent removes the common leading whitespace from every line, preserving the
+// relative indentation that nested lists rely on. Without it, an infobox body
+// indented more deeply than its tag would be parsed as a code block.
+func dedent(s string) string {
+	lines := strings.Split(s, "\n")
+
+	indent := -1
+	for _, line := range lines {
+		stripped := strings.TrimLeft(line, " \t")
+		if stripped == "" {
+			continue
+		}
+		if width := len(line) - len(stripped); indent < 0 || width < indent {
+			indent = width
+		}
+	}
+	if indent <= 0 {
+		return s
+	}
+
+	for i, line := range lines {
+		if len(line) >= indent {
+			lines[i] = line[indent:]
+		} else {
+			lines[i] = strings.TrimLeft(line, " \t")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderCodelab(codelab *Codelab, outputPath string) error {
