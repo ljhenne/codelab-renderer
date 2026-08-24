@@ -57,7 +57,7 @@ const codelabTemplate = `<!DOCTYPE html>
   <title>{{.Title}}</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Source+Code+Pro:400,700;Roboto:400,400italic,500,500italic,700,700italic">
   <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
-  <link rel="stylesheet" href="https://unpkg.com/codelab-elements/codelab-elements.css">
+  <link rel="stylesheet" href="https://storage.googleapis.com/claat-public/codelab-elements.css">
   <style>
     .success {
       color: #1e8e3e;
@@ -86,8 +86,10 @@ const codelabTemplate = `<!DOCTYPE html>
     </google-codelab-step>
     {{end}}
   </google-codelab>
-  <script src="https://unpkg.com/@webcomponents/webcomponentsjs/custom-elements-es5-adapter.js"></script>
-  <script src="https://unpkg.com/codelab-elements/codelab-elements.js"></script>
+  <script src="https://storage.googleapis.com/claat-public/native-shim.js"></script>
+  <script src="https://storage.googleapis.com/claat-public/custom-elements.min.js"></script>
+  <script src="https://storage.googleapis.com/claat-public/prettify.js"></script>
+  <script src="https://storage.googleapis.com/claat-public/codelab-elements.js"></script>
   {{if .WatchMode}}
   <script>
     // Restore scroll position
@@ -127,6 +129,7 @@ func main() {
 	outPath := flag.String("out", "preview.html", "path to the output HTML file")
 	openFlag := flag.Bool("open", true, "automatically open the generated HTML file in the default browser")
 	watchFlag := flag.Bool("watch", false, "start a local HTTP server and automatically refresh on markdown updates")
+	portFlag := flag.Int("port", 8394, "port to host the preview server on")
 	flag.Parse()
 
 	log.Printf("Starting Codelab renderer compilation...")
@@ -153,10 +156,10 @@ func main() {
 
 		go watchFiles(*inPath, *outPath, codelab, rs)
 
-		addr := "localhost:8080"
+		addr := fmt.Sprintf("localhost:%d", *portFlag)
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
-			log.Printf("Port 8080 is in use. Finding a free alternative port...")
+			log.Printf("Port %d is in use. Finding a free alternative port...", *portFlag)
 			listener, err = net.Listen("tcp", "localhost:0")
 			if err != nil {
 				log.Fatalf("Failed to bind port listener: %v", err)
@@ -325,7 +328,7 @@ func parseSteps(mdStr string, baseDir string) ([]Step, error) {
 	var rawLines []string
 
 	durationRe := regexp.MustCompile(`(?i)duration:\s*(\d+)`)
-	linkRe := regexp.MustCompile(`\[[^\]]*\]\(([^)]+\.md)\)`)
+	linkRe := regexp.MustCompile(`(?:\[[^\]]*\]\(([^)]+\.md)\)|<<\s*([^>]+\.md)\s*>>)`)
 	attributeRe := regexp.MustCompile(`\{:.*\}`)
 
 	saveCurrentStep := func() error {
@@ -337,7 +340,11 @@ func parseSteps(mdStr string, baseDir string) ([]Step, error) {
 		var referencedFile string
 		for _, line := range rawLines {
 			if matches := linkRe.FindStringSubmatch(line); len(matches) > 1 {
-				referencedFile = strings.TrimSpace(matches[1])
+				if matches[1] != "" {
+					referencedFile = strings.TrimSpace(matches[1])
+				} else if len(matches) > 2 && matches[2] != "" {
+					referencedFile = strings.TrimSpace(matches[2])
+				}
 				break
 			}
 		}
