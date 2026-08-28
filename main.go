@@ -19,6 +19,7 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
+	gmhtml "github.com/yuin/goldmark/renderer/html"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,6 +65,31 @@ const codelabTemplate = `<!DOCTYPE html>
     }
     code {
       font-family: 'Source Code Pro', monospace;
+    }
+    aside.special, aside.positive, aside.tip {
+      border-left: 4px solid #137333;
+      background: #E6F4EA;
+      color: #212124;
+      padding: 0.5em 1em;
+      margin: 1.5em 0;
+      border-radius: 4px;
+    }
+    aside.warning, aside.negative, aside.note, aside.notice, aside.caution {
+      border-left: 4px solid #EA8600;
+      background: #FEF7E0;
+      color: #212124;
+      padding: 0.5em 1em;
+      margin: 1.5em 0;
+      border-radius: 4px;
+    }
+    aside p {
+      margin: 0.5em 0;
+    }
+    aside p:first-child {
+      margin-top: 0;
+    }
+    aside p:last-child {
+      margin-bottom: 0;
     }
   </style>
 </head>
@@ -321,6 +347,92 @@ func parseInstructions(filePath string) (*Codelab, error) {
 	return codelab, nil
 }
 
+var (
+	asideHeaderRe = regexp.MustCompile(`(?i)^\s*>\s*(?:\*\*)?aside\s*:?\s*(positive|negative|special|warning|notice|note|tip|caution)(?:\*\*)?\s*:?\s*(.*)$`)
+	bqLineRe      = regexp.MustCompile(`^\s*>\s?(.*)$`)
+)
+
+func transformAsides(input string) string {
+	lines := strings.Split(input, "\n")
+	var result []string
+	inAside := false
+	var asideClass string
+	var asideLines []string
+
+	flushAside := func() {
+		if !inAside {
+			return
+		}
+		result = append(result, "<aside class=\""+asideClass+"\">\n")
+		result = append(result, strings.Join(asideLines, "\n"))
+		result = append(result, "\n</aside>")
+		inAside = false
+		asideClass = ""
+		asideLines = nil
+	}
+
+	startAside := func(matches []string) {
+		inAside = true
+		kind := strings.ToLower(matches[1])
+		switch kind {
+		case "positive", "special", "tip":
+			asideClass = "special"
+		default:
+			asideClass = "warning"
+		}
+		asideLines = []string{}
+		rest := strings.TrimSpace(matches[2])
+		if rest != "" {
+			asideLines = append(asideLines, rest)
+		}
+	}
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+
+		if matches := asideHeaderRe.FindStringSubmatch(line); len(matches) > 1 {
+			flushAside()
+			startAside(matches)
+			continue
+		}
+
+		if !inAside {
+			result = append(result, line)
+		} else {
+			if matches := bqLineRe.FindStringSubmatch(line); len(matches) > 1 {
+				asideLines = append(asideLines, matches[1])
+			} else if strings.TrimSpace(line) == "" {
+				continues := false
+				for j := i + 1; j < len(lines); j++ {
+					trimmedNext := strings.TrimSpace(lines[j])
+					if trimmedNext == "" {
+						continue
+					}
+					if asideHeaderRe.MatchString(trimmedNext) {
+						break
+					}
+					if strings.HasPrefix(trimmedNext, ">") {
+						continues = true
+					}
+					break
+				}
+				if continues {
+					asideLines = append(asideLines, "")
+				} else {
+					flushAside()
+					result = append(result, line)
+				}
+			} else {
+				flushAside()
+				result = append(result, line)
+			}
+		}
+	}
+
+	flushAside()
+	return strings.Join(result, "\n")
+}
+
 func parseSteps(mdStr string, baseDir string) ([]Step, error) {
 	lines := strings.Split(mdStr, "\n")
 	var steps []Step
@@ -360,10 +472,15 @@ func parseSteps(mdStr string, baseDir string) ([]Step, error) {
 			stepMD = strings.Join(rawLines, "\n")
 		}
 
+		stepMD = transformAsides(stepMD)
+
 		var buf bytes.Buffer
 		md := goldmark.New(
 			goldmark.WithExtensions(
 				extension.GFM,
+			),
+			goldmark.WithRendererOptions(
+				gmhtml.WithUnsafe(),
 			),
 		)
 		if err := md.Convert([]byte(stepMD), &buf); err != nil {
